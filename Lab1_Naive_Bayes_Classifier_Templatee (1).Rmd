@@ -1,0 +1,218 @@
+---
+editor_options:
+markdown:
+wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Probability and Statistics
+
+# Lab Assignment 1: Naive Bayes Classifier
+
+### *ANDRIEIEV KYRYL, HUMENIUK MYKHAILO, BILINSKYI ANDRII*
+
+## Introduction
+
+During the past three weeks, we learned a couple of essential notions
+and theorems, and one of the most important among them is the *Bayes
+theorem*.
+
+One of its applications is **Naive Bayes classifier**, which is a
+probabilistic classifier whose aim is to determine which class some
+observation probably belongs to by using the Bayes formula:
+$$\mathsf{P}(\mathrm{class}\mid \mathrm{observation})=\frac{\mathsf{P}(\mathrm{observation}\mid\mathrm{class})\mathsf{P}(\mathrm{class})}{\mathsf{P}(\mathrm{observation})}$$
+
+Under the strong independence assumption, one can calculate
+$\mathsf{P}(\mathrm{observation} \mid \mathrm{class})$ as
+$$\mathsf{P}(\mathrm{observation}) = \prod_{i=1}^{n} \mathsf{P}(\mathrm{feature}_i), \qquad \mathsf{P}(\mathrm{observation} \mid \mathrm{class}) = \prod_{i=1}^{n} \mathsf{P}(\mathrm{feature}_i \mid \mathrm{class}),$$
+where $n$ is the total number of features describing a given
+observation. Thus, $\mathsf{P}(\mathrm{class}|\mathrm{observation})$ now
+can be calculated as
+
+$$\mathsf{P}(\mathrm{class} \mid \mathrm{\mathrm{observation}}) = \mathsf{P}(\mathrm{class})\times \prod_{i=1}^{n}\frac{\mathsf{P}(\mathrm{feature}_i\mid \mathrm{class})}{\mathsf{P}(\mathrm{feature}_i)}\tag{1}$$
+
+## Data description
+**0 - authors** This data set consists of citations of three famous
+writers: Edgar Alan Poe, Mary Wollstonecraft Shelley and HP
+Lovecraft. The task with this data set is to classify a piece of
+text with the author who was more likely to write it.
+
+```{r}
+# list of used libraries
+library(tidytext)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(caret)
+```
+### Data pre-processing
+
+```{r}
+list.files(getwd())
+list.files("data/0-authors")
+# source paths
+test_path <- "data/0-authors/test.csv"
+train_path <- "data/0-authors/train.csv"
+# get data frames from files
+train <- read.csv(file = train_path, stringsAsFactors = FALSE)
+test <- read.csv(file = test_path, stringsAsFactors = FALSE)
+# get authors
+authors <- unique(train %>% pull(author))
+# get stop words
+stop_words <- read_file("stop_words.txt")
+splitted_stop_words <- strsplit(stop_words, split = '\n')
+splitted_stop_words <- splitted_stop_words[[1]]
+```
+
+### Data visualization
+```{r}
+text <- unnest_tokens(train, 'splitted', 'text', token="words") %>%
+             filter(!splitted %in% splitted_stop_words)
+
+total_words <- head(text %>% count(splitted, sort = TRUE), 10)
+lovecraft <- head(text[text$author == "HP Lovecraft",] %>% count(splitted, sort = TRUE), 10)
+alanpoe <- head(text[text$author == "Edgar Alan Poe",] %>% count(splitted, sort = TRUE), 10)
+mary <- head(text[text$author == "Mary Wollstonecraft Shelley ",] %>% count(splitted, sort = TRUE), 10)
+ggplot(total_words, aes(x = splitted, y = n)) +
+  geom_bar(stat = "summary") +
+  ylab("Occurrences") + xlab("Most common words")
+
+
+ggplot(lovecraft, aes(x = splitted, y = n)) +
+  geom_bar(stat = "summary") +
+  ylab("Occurrences") + xlab("Most common words for Lovecraft")
+
+ggplot(alanpoe, aes(x = splitted, y = n)) +
+  geom_bar(stat = "summary") +
+  ylab("Occurrences") + xlab("Most common words for Alan Poe")
+
+ggplot(mary, aes(x = splitted, y = n)) +
+  geom_bar(stat = "summary") +
+  ylab("Occurrences") + xlab("Most common words for Mary Wollstonecraft Shelley")
+```
+## Classifier implementation
+
+```{r}
+author_probability <- data.frame(
+  id = 1:3,
+  author = authors,
+  probability = c((nrow(train[train$author == authors[2],]) / nrow(train)),
+                  (nrow(train[train$author == authors[1],]) / nrow(train)),
+                  (nrow(train[train$author == authors[3],]) / nrow(train))),
+  stringsAsFactors = FALSE
+)
+naiveBayes <- setRefClass("naiveBayes",
+                          # data frame with probabilities of all authors
+                          fields = list(data = "data.frame", labels = "vector", total_words_bag = "data.frame", lovecraft_bag = "data.frame", alanpoe_bag = "data.frame", mary_bag = "data.frame"),
+                          methods = list(
+                            is_integer0 = function(x)
+                            {
+                              if (length(x) == 0 & is.integer(x)) {
+                                return(0)
+                              } else {
+                                return(x)
+                              }
+                            },
+                            fit = function(X = data, Y = labels)
+                            {
+                              # split all citations into words without stop words
+                              tidy_text <- unnest_tokens(X, 'word', 'text', token = "words") %>%
+                                filter(!word %in% splitted_stop_words)
+                              # get all bags of words
+                              total_words_bag <<- tidy_text %>% count(word, sort = TRUE)
+                              lovecraft_bag <<- tidy_text[tidy_text$author == Y[1],] %>% count(word, sort = TRUE)
+                              alanpoe_bag <<- tidy_text[tidy_text$author == Y[2],] %>% count(word, sort = TRUE)
+                              mary_bag <<- tidy_text[tidy_text$author == Y[3],] %>% count(word, sort = TRUE)
+                            },
+                            predict = function(message)
+                            {
+                              # process the message
+                              message <- gsub('[[:punct:] ]+', ' ', message)
+                              message <- casefold(message, upper = FALSE)
+                              splitted_message <- strsplit(message, split = ' ')
+                              splitted_message <- splitted_message[[1]]
+                              splitted_message <- unlist(splitted_message)[!(unlist(splitted_message) %in% splitted_stop_words)]
+                              lovecraft_prediction = author_probability[author_probability$author == authors[1], "probability"]
+                              alanpoe_prediction = author_probability[author_probability$author == authors[2], "probability"]
+                              mary_prediction = author_probability[author_probability$author == authors[3], "probability"]
+                              for (i in splitted_message) {
+                                lovecraft_prediction <- lovecraft_prediction * ((is_integer0(lovecraft_bag[lovecraft_bag$word == i, "n"]) + 1) / (nrow(lovecraft_bag) + nrow(total_words_bag)))
+                                alanpoe_prediction <- alanpoe_prediction * ((is_integer0(alanpoe_bag[alanpoe_bag$word == i, "n"]) + 1) / (nrow(alanpoe_bag) + nrow(total_words_bag)))
+                                mary_prediction <- mary_prediction * ((is_integer0(mary_bag[mary_bag$word == i, "n"]) + 1) / (nrow(mary_bag) + nrow(total_words_bag)))
+                              }
+                              most_likely <- max(c(lovecraft_prediction, alanpoe_prediction, mary_prediction))
+                              if (most_likely == lovecraft_prediction) {
+                                return("HP Lovecraft")
+                              } else if (most_likely == alanpoe_prediction) {
+                                return("Edgar Alan Poe")
+                              } else {
+                                return("Mary Wollstonecraft Shelley ")
+                              }
+                            },
+                            score = function(test_data) {
+                              test_data["prediction"] <- apply(test_data['text'], 1, FUN = model$predict)
+                              cm <- confusionMatrix(factor(test_data$prediction), factor(test_data$author))
+                              print(cm[["byClass"]][, "F1"])
+                              return(cm)
+                            }
+                          )
+)
+```
+
+## Measure effectiveness of your classifier
+```{r}
+model <- naiveBayes(data = train, labels = authors)
+model$fit()
+cm <- model$score(test)
+plt <- as.data.frame(cm$table)
+plt$Prediction <- factor(plt$Prediction, levels = rev(levels(plt$Prediction)))
+print(ggplot(plt, aes(Prediction, Reference, fill = Freq)) +
+        geom_tile() +
+        geom_text(aes(label = Freq)) +
+        scale_fill_gradient(low = "white", high = "#009194") +
+        labs(x = "Prediction", y = "Reference") +
+        scale_x_discrete(labels = c("Mary Wollstonecraft Shelley", "HP Lovecraft", "Edgar Alan Poe")) +
+        scale_y_discrete(labels = c("Edgar Alan Poe", "HP Lovecraft", "Mary Wollstonecraft Shelley")))
+```
+## Conclusions
+  We implemented a *Naive Bayes classifier*. We used *Bayes’ Theorem* for this task. An interesting thing about our classifier
+is that we assume that every word in a sentence is independent of the other ones. This means that we’re no longer
+looking at entire sentences, but rather at individual words. That's why this classifier is called *naive*.
+
+**Fit:**<br>
+  In this method, we processed the training data to form bags of words for each label.
+We also tried to lemmatize words for faster performance of the classifier.
+
+library(stemwords)<br>
+In *fit()*:<br>
+for (i in 1:nrow(tidy_text)) {<br>
+  tidy_text[i, 4] <- lemmatize_words(c(tidy_text[i, 4]))<br>
+  }<br>
+
+In *predict():*<br>
+splitted_message <- lemmatize_words(splitted_message)<br>
+
+But the accuracy of the classifier decreased due to the characteristics of the provided data.
+Thus, we decided not to implement it.
+
+**Predict:**<br>
+  In this method, we count the probabilities for each label. We processed the message to look for each word appropriately.
+In calculations, we discard the divisor while counting probabilities, since it is the same for all the labels. This
+tactic makes calculations easier and faster. We also used *Laplace smoothing* to avoid nullified probabilities.
+
+**Score:**<br>
+  To test our predictions, for every author we calculated recall and precision of predicting(using the r libraries). Using that calculated F1 and got approximately 
+82% with slight difference for every author.Also we visualized all of the results
+of our predictions.
+
+**Pros:**<br>
+This algorithm works very fast and can easily predict the class of a test dataset.
+It can be used for both Binary and Multi-class Classifications.
+It effectively works in Multi-class predictions.
+
+**Cons:**<br>
+It assumes that all the features are independent, but there few real-life sets of independent features.
+Thus, it has a quiet limited application.
